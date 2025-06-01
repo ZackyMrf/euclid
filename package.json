@@ -1,0 +1,30 @@
+{
+  "name": "euclid-bot",
+  "version": "1.0.0",
+  "description": "Airdrop Seeker for Euclid Protocol",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "euclid",
+    "bot",
+    "airdrop",
+    "ethereum",
+    "arbitrum"
+  ],
+  "author": "mrf",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.3.1",
+    "axios": "^1.6.2",
+    "ethers": "^6.8.1",
+    "figlet": "^1.6.0",
+    "https-proxy-agent": "^7.0.2",
+    "fs": "0.0.1-security"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}
