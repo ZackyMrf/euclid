@@ -1,7 +1,7 @@
 {
   "name": "euclid-bot",
   "version": "1.0.0",
-  "description": "Airdrop Seeker for Euclid Protocol",
+  "description": "",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
