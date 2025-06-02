@@ -5,7 +5,8 @@ A command-line tool for automating interactions with Euclid Protocol on Arbitrum
 ## Features
 
 - Swap ETH to EUCLID, ANDR, or MON tokens
-- Support for proxy rotation to avoid rate limits
+- Support for multiple accounts from a single .env file
+- Proxy rotation to avoid rate limits
 - Interactive CLI with colorful output
 - Automatic transaction tracking with Euclid and Intract
 - Configurable transaction amounts and counts
@@ -15,7 +16,7 @@ A command-line tool for automating interactions with Euclid Protocol on Arbitrum
 ## Prerequisites
 
 - Node.js v14 or higher
-- An Ethereum wallet with Arbitrum Sepolia ETH
+- One or more Ethereum wallets with Arbitrum Sepolia ETH
 - (Optional) Proxy list for avoiding rate limits
 
 ## Installation
@@ -31,9 +32,11 @@ A command-line tool for automating interactions with Euclid Protocol on Arbitrum
    npm install
    ```
 
-3. Configure your `.env` file with your private key:
+3. Configure your `.env` file with one or more private keys:
    ```
-   PRIVATE_KEY="your_private_key_here"
+   PRIVATE_KEY="your_first_private_key_here"
+   PRIVATE_KEY="your_second_private_key_here"
+   PRIVATE_KEY="your_third_private_key_here"
    ```
 
 4. (Optional) Add proxies to `proxy.txt` in the format:
@@ -50,10 +53,18 @@ A command-line tool for automating interactions with Euclid Protocol on Arbitrum
 
 2. Follow the interactive prompts:
    - Choose swap type (EUCLID, ANDR, MON, or Random)
-   - Enter number of transactions
+   - Enter number of transactions per account
    - Enter ETH amount per transaction
+   - Select which accounts to use (single, all, or exit)
    - Choose whether to use proxies
    - Confirm the transaction summary
+
+## Multi-Account Support
+
+The bot can now process multiple accounts sequentially. You can:
+- Add multiple private keys to your `.env` file (each starting with `PRIVATE_KEY=`)
+- Choose a specific account or run all accounts during execution
+- See individual and aggregate transaction statistics
 
 ## Transaction Types
 
@@ -68,7 +79,7 @@ The bot supports HTTP proxies for API requests to avoid rate limits. Add your pr
 
 ## Security Notes
 
-- Never share your `.env` file or private key
+- Never share your `.env` file or private keys
 - This bot is for educational purposes only
 - Test with small amounts first
 - The bot operates on the Arbitrum Sepolia testnet
