@@ -14,7 +14,8 @@ const colors = {
   yellow: '\x1b[33m',
   cyan: '\x1b[36m',
   white: '\x1b[37m',
-  blue: '\x1b[34m'
+  blue: '\x1b[34m',
+  magenta: '\x1b[35m'
 };
 
 // Simplified logger
@@ -25,6 +26,7 @@ const logger = {
   success: (msg) => console.log(`${colors.green}[✓] ${msg}${colors.reset}`),
   step: (msg) => console.log(`${colors.white}[>] ${msg}${colors.reset}`),
   loading: (msg) => console.log(`${colors.blue}[⟳] ${msg}${colors.reset}`),
+  account: (msg) => console.log(`${colors.magenta}[A] ${msg}${colors.reset}`),
   banner: () => {
     console.log(figlet.textSync('EUCLID BOT', { font: 'Standard' }));
     console.log('  Mrf\n');
@@ -41,6 +43,42 @@ const rl = readline.createInterface({
 const question = (query) => new Promise(resolve => rl.question(query, resolve));
 const randomDelay = (min = 2000, max = 5000) => 
   new Promise(resolve => setTimeout(resolve, Math.floor(Math.random() * (max - min + 1)) + min));
+
+// Load accounts from .env file
+const loadAccounts = () => {
+  try {
+    if (!fs.existsSync('.env')) {
+      logger.error('No .env file found. Please create one with PRIVATE_KEY entries.');
+      return [];
+    }
+    
+    const envData = fs.readFileSync('.env', 'utf8');
+    const lines = envData.split('\n');
+    
+    // Extract all private keys from lines that start with PRIVATE_KEY
+    const accounts = [];
+    
+    for (const line of lines) {
+      if (line.trim().startsWith('PRIVATE_KEY')) {
+        // Extract everything after the equals sign
+        const parts = line.split('=');
+        if (parts.length > 1) {
+          const key = parts.slice(1).join('=').trim();
+          // Remove quotes if present
+          const cleanKey = key.replace(/^["']|["']$/g, '');
+          if (cleanKey) {
+            accounts.push(cleanKey);
+          }
+        }
+      }
+    }
+    
+    return accounts;
+  } catch (error) {
+    logger.warn(`Failed to load accounts from .env: ${error.message}`);
+    return [];
+  }
+};
 
 // Load proxies from file
 const loadProxies = () => {
@@ -175,73 +213,19 @@ const TOKEN_CONFIGS = {
 // Check ethers version
 const isEthersV6 = parseInt(ethers.version.split('.')[0], 10) >= 6;
 
-// Main function
-async function main() {
-  logger.banner();
-
+// Process transactions for a single account
+async function processAccount(accountIndex, privateKey, config) {
+  const {
+    swapType, 
+    numTransactions, 
+    ethAmount, 
+    useProxy, 
+    proxies, 
+    provider
+  } = config;
+  
   try {
-    // Load proxies
-    const proxies = loadProxies();
-    const useProxies = proxies.length > 0;
-    
-    if (useProxies) {
-      logger.info(`Loaded ${proxies.length} proxies from proxy.txt`);
-    } else {
-      logger.warn(`No proxies loaded from proxy.txt. Running without proxy.`);
-    }
-
-    // Menu display
-    console.log(`${colors.cyan}Swap Options:${colors.reset}`);
-    console.log(`1. ETH - EUCLID (Arbitrum)`);
-    console.log(`2. ETH - ANDR (Arbitrum)`);
-    console.log(`3. ETH - MON (Arbitrum)`);
-    console.log(`4. Random Swap (EUCLID/ANDR/MON)`);
-    console.log(`5. Exit\n`);
-
-    const swapType = await question(`${colors.cyan}Enter option (1-5): ${colors.reset}`);
-    
-    if (swapType === '5') {
-      logger.info(`Exiting...`);
-      rl.close();
-      return;
-    }
-
-    if (!['1', '2', '3', '4'].includes(swapType)) {
-      logger.error(`Invalid option. Please enter 1-5.`);
-      rl.close();
-      return;
-    }
-
-    // Get transaction parameters
-    const numTransactions = parseInt(await question(`${colors.cyan}Number of transactions: ${colors.reset}`));
-    const ethAmount = parseFloat(await question(`${colors.cyan}ETH amount per transaction: ${colors.reset}`));
-
-    if (isNaN(numTransactions) || isNaN(ethAmount) || numTransactions <= 0 || ethAmount <= 0) {
-      logger.error(`Invalid input. Please enter positive numbers.`);
-      rl.close();
-      return;
-    }
-
-    // Proxy option
-    let useProxy = false;
-    if (useProxies) {
-      const proxyOption = await question(`${colors.cyan}Use proxies? (y/n): ${colors.reset}`);
-      useProxy = proxyOption.toLowerCase() === 'y';
-    }
-
-    // Get private key from .env
-    const privateKey = process.env.PRIVATE_KEY;
-    if (!privateKey) {
-      logger.error(`Private key not found in .env file`);
-      rl.close();
-      return;
-    }
-
-    // Setup provider and wallet
-    const provider = isEthersV6 
-      ? new ethers.JsonRpcProvider('https://sepolia-rollup.arbitrum.io/rpc')
-      : new ethers.providers.JsonRpcProvider('https://sepolia-rollup.arbitrum.io/rpc');
-    
+    // Setup wallet
     const wallet = isEthersV6
       ? new ethers.Wallet(privateKey, provider)
       : new ethers.Wallet(privateKey, provider);
@@ -249,8 +233,8 @@ async function main() {
     const walletAddress = wallet.address;
     const contractAddress = '0x7f2CC9FE79961f628Da671Ac62d1f2896638edd5';
 
-    logger.info(`Connected to wallet: ${colors.yellow}${walletAddress}`);
-    logger.info(`Network: ${colors.yellow}Arbitrum Sepolia (Chain ID: 421614)\n`);
+    // Display account info
+    logger.account(`Account ${accountIndex + 1}: ${colors.yellow}${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}`);
 
     // Check balance
     const balance = await provider.getBalance(walletAddress);
@@ -283,31 +267,14 @@ async function main() {
         ? ethers.formatEther(balance)
         : ethers.utils.formatEther(balance);
       
-      logger.error(`Insufficient ETH balance. Required: ${formattedRequired} ETH, Available: ${formattedBalance} ETH`);
-      rl.close();
-      return;
+      logger.error(`Insufficient ETH balance for account ${accountIndex + 1}. Required: ${formattedRequired} ETH, Available: ${formattedBalance} ETH`);
+      return { success: 0, failed: numTransactions };
     }
 
-    // Show transaction summary
-    const tokenName = swapType === '1' ? 'EUCLID' : swapType === '2' ? 'ANDR' : swapType === '3' ? 'MON' : 'Random';
-    const formattedTotal = isEthersV6
-      ? ethers.formatEther(totalRequiredEth)
-      : ethers.utils.formatEther(totalRequiredEth);
-      
-    logger.warn(`Transaction Summary:`);
-    logger.step(`Swap type: ${colors.yellow}${tokenName}`);
-    logger.step(`Transactions: ${colors.yellow}${numTransactions}`);
-    logger.step(`ETH per tx: ${colors.yellow}${ethAmount} ETH`);
-    logger.step(`Total ETH: ${colors.yellow}${formattedTotal} ETH`);
-    logger.step(`Using proxies: ${colors.yellow}${useProxy ? 'Yes' : 'No'}`);
-    logger.step(`Retry policy: ${colors.yellow}20 attempts with 5s+ backoff\n`);
-
-    const confirm = await question(`${colors.yellow}Continue? (y/n): ${colors.reset}`);
-    if (confirm.toLowerCase() !== 'y') {
-      logger.error(`Operation cancelled.`);
-      rl.close();
-      return;
-    }
+    logger.info(`Starting ${numTransactions} transactions for account ${accountIndex + 1}`);
+    
+    let successCount = 0;
+    let failedCount = 0;
 
     // Execute transactions
     for (let i = 0; i < numTransactions; i++) {
@@ -330,8 +297,8 @@ async function main() {
         targetToken = swapType === '1' ? 'euclid' : swapType === '2' ? 'andr' : 'mon';
       }
       
-      const config = TOKEN_CONFIGS[targetToken];
-      logger.loading(`Transaction ${i + 1}/${numTransactions} (ETH to ${targetToken.toUpperCase()}):`);
+      const tokenConfig = TOKEN_CONFIGS[targetToken];
+      logger.loading(`Account ${accountIndex + 1} | TX ${i + 1}/${numTransactions} (ETH to ${targetToken.toUpperCase()}):`);
       
       try {
         await randomDelay(1000, 3000);
@@ -352,10 +319,10 @@ async function main() {
             {
               user: {
                 address: walletAddress,
-                chain_uid: config.chainUid
+                chain_uid: tokenConfig.chainUid
               },
               limit: {
-                less_than_or_equal: config.defaultAmountOut
+                less_than_or_equal: tokenConfig.defaultAmountOut
               }
             }
           ],
@@ -370,15 +337,15 @@ async function main() {
           swap_path: {
             path: [
               {
-                route: config.swapRoute,
+                route: tokenConfig.swapRoute,
                 dex: 'euclid',
                 amount_in: ethValue.toString(),
                 amount_out: '0',
                 chain_uid: 'vsl',
-                amount_out_for_hops: config.swapRoute.map(token => `${token}: 0`)
+                amount_out_for_hops: tokenConfig.swapRoute.map(token => `${token}: 0`)
               }
             ],
-            total_price_impact: config.priceImpact
+            total_price_impact: tokenConfig.priceImpact
           }
         };
 
@@ -399,10 +366,11 @@ async function main() {
         // Extract amount_out from response or use default
         const amountOut = quoteResponse.data.meta
           ? JSON.parse(quoteResponse.data.meta).swaps.path[0].amount_out
-          : config.defaultAmountOut;
+          : tokenConfig.defaultAmountOut;
           
         if (!amountOut || amountOut === '0') {
           logger.error(`Invalid amount_out in API response. Skipping transaction.`);
+          failedCount++;
           continue;
         }
 
@@ -416,10 +384,10 @@ async function main() {
               {
                 ...quotePayload.swap_path.path[0],
                 amount_out: amountOut,
-                amount_out_for_hops: config.amountOutHops
+                amount_out_for_hops: tokenConfig.amountOutHops
               }
             ],
-            total_price_impact: config.priceImpact
+            total_price_impact: tokenConfig.priceImpact
           }
         };
 
@@ -440,11 +408,13 @@ async function main() {
         const txData = swapResponse.data.msgs?.[0]?.data;
         if (!txData) {
           logger.error(`Calldata not found in API response. Skipping transaction.`);
+          failedCount++;
           continue;
         }
 
         if (swapResponse.data.sender?.address.toLowerCase() !== walletAddress.toLowerCase()) {
           logger.error(`API returned incorrect sender address. Skipping transaction.`);
+          failedCount++;
           continue;
         }
 
@@ -482,6 +452,7 @@ async function main() {
           await provider.call(tx);
         } catch (simulationError) {
           logger.error(`Transaction simulation failed: ${simulationError.reason || simulationError.message}`);
+          failedCount++;
           continue;
         }
 
@@ -495,6 +466,7 @@ async function main() {
 
         if (receipt.status === 1) {
           logger.success(`Transaction successful! Gas used: ${receipt.gasUsed.toString()}`);
+          successCount++;
           await randomDelay(2000, 4000);
 
           // Track transaction with Euclid
@@ -505,7 +477,7 @@ async function main() {
                 dex: 'euclid',
                 release_address: [
                   {
-                    chain_uid: config.chainUid,
+                    chain_uid: tokenConfig.chainUid,
                     address: walletAddress,
                     amount: amountOut
                   }
@@ -517,7 +489,7 @@ async function main() {
             swaps: {
               path: [
                 {
-                  route: config.swapRoute,
+                  route: tokenConfig.swapRoute,
                   dex: 'euclid',
                   chain_uid: 'vsl',
                   amount_in: ethValue.toString(),
@@ -561,6 +533,7 @@ async function main() {
           logger.step(`View transaction: ${colors.cyan}https://sepolia.arbiscan.io/tx/${txResponse.hash}`);
         } else {
           logger.error(`Transaction failed!`);
+          failedCount++;
         }
 
         // Delay before next transaction
@@ -576,11 +549,173 @@ async function main() {
           logger.warn(`Rate limit hit. Waiting 30s before continuing...`);
           await new Promise(resolve => setTimeout(resolve, 30000));
         }
+        failedCount++;
       }
       console.log();
     }
 
-    logger.success(`All transactions completed!`);
+    logger.success(`Account ${accountIndex + 1} completed! Success: ${successCount}, Failed: ${failedCount}`);
+    return { success: successCount, failed: failedCount };
+  } catch (error) {
+    logger.error(`Fatal error for account ${accountIndex + 1}: ${error.message}`);
+    return { success: 0, failed: numTransactions };
+  }
+}
+
+// Main function
+async function main() {
+  logger.banner();
+
+  try {
+    // Load accounts and proxies
+    const accounts = loadAccounts();
+    const proxies = loadProxies();
+    const useProxies = proxies.length > 0;
+    
+    if (accounts.length === 0) {
+      logger.error('No accounts found. Please add PRIVATE_KEY entries in your .env file, one per line.');
+      logger.info('Example: PRIVATE_KEY="your_private_key_here"');
+      rl.close();
+      return;
+    }
+    
+    logger.info(`Loaded ${accounts.length} accounts from .env file`);
+    
+    if (useProxies) {
+      logger.info(`Loaded ${proxies.length} proxies from proxy.txt`);
+    } else {
+      logger.warn(`No proxies loaded from proxy.txt. Running without proxy.`);
+    }
+
+    // Menu display
+    console.log(`${colors.cyan}Swap Options:${colors.reset}`);
+    console.log(`1. ETH - EUCLID (Arbitrum)`);
+    console.log(`2. ETH - ANDR (Arbitrum)`);
+    console.log(`3. ETH - MON (Arbitrum)`);
+    console.log(`4. Random Swap (EUCLID/ANDR/MON)`);
+    console.log(`5. Exit\n`);
+
+    const swapType = await question(`${colors.cyan}Enter option (1-5): ${colors.reset}`);
+    
+    if (swapType === '5') {
+      logger.info(`Exiting...`);
+      rl.close();
+      return;
+    }
+
+    if (!['1', '2', '3', '4'].includes(swapType)) {
+      logger.error(`Invalid option. Please enter 1-5.`);
+      rl.close();
+      return;
+    }
+
+    // Get transaction parameters
+    const numTransactions = parseInt(await question(`${colors.cyan}Number of transactions per account: ${colors.reset}`));
+    const ethAmount = parseFloat(await question(`${colors.cyan}ETH amount per transaction: ${colors.reset}`));
+
+    if (isNaN(numTransactions) || isNaN(ethAmount) || numTransactions <= 0 || ethAmount <= 0) {
+      logger.error(`Invalid input. Please enter positive numbers.`);
+      rl.close();
+      return;
+    }
+    
+    // Select accounts to use
+    console.log(`${colors.cyan}Available accounts:${colors.reset}`);
+    accounts.forEach((_, i) => {
+      console.log(`${i+1}. Account ${i+1}`);
+    });
+    console.log(`${accounts.length+1}. All accounts`);
+    console.log(`${accounts.length+2}. Exit\n`);
+    
+    const accountChoice = parseInt(await question(`${colors.cyan}Choose account(s) to use: ${colors.reset}`));
+    
+    if (isNaN(accountChoice) || accountChoice < 1 || accountChoice > accounts.length + 2) {
+      logger.error(`Invalid option.`);
+      rl.close();
+      return;
+    }
+    
+    if (accountChoice === accounts.length + 2) {
+      logger.info(`Exiting...`);
+      rl.close();
+      return;
+    }
+    
+    let selectedAccounts = [];
+    if (accountChoice === accounts.length + 1) {
+      // All accounts
+      selectedAccounts = accounts.map((acc, i) => i);
+    } else {
+      // Single account
+      selectedAccounts = [accountChoice - 1];
+    }
+
+    // Proxy option
+    let useProxy = false;
+    if (useProxies) {
+      const proxyOption = await question(`${colors.cyan}Use proxies? (y/n): ${colors.reset}`);
+      useProxy = proxyOption.toLowerCase() === 'y';
+    }
+
+    // Setup provider
+    const provider = isEthersV6 
+      ? new ethers.JsonRpcProvider('https://sepolia-rollup.arbitrum.io/rpc')
+      : new ethers.providers.JsonRpcProvider('https://sepolia-rollup.arbitrum.io/rpc');
+
+    logger.info(`Connected to network: ${colors.yellow}Arbitrum Sepolia (Chain ID: 421614)\n`);
+
+    // Show transaction summary
+    const tokenName = swapType === '1' ? 'EUCLID' : swapType === '2' ? 'ANDR' : swapType === '3' ? 'MON' : 'Random';
+    const totalTransactions = numTransactions * selectedAccounts.length;
+      
+    logger.warn(`Transaction Summary:`);
+    logger.step(`Swap type: ${colors.yellow}${tokenName}`);
+    logger.step(`Accounts: ${colors.yellow}${selectedAccounts.length}`);
+    logger.step(`Transactions per account: ${colors.yellow}${numTransactions}`);
+    logger.step(`Total transactions: ${colors.yellow}${totalTransactions}`);
+    logger.step(`ETH per tx: ${colors.yellow}${ethAmount} ETH`);
+    logger.step(`Using proxies: ${colors.yellow}${useProxy ? 'Yes' : 'No'}`);
+    logger.step(`Retry policy: ${colors.yellow}20 attempts with 5s+ backoff\n`);
+
+    const confirm = await question(`${colors.yellow}Continue? (y/n): ${colors.reset}`);
+    if (confirm.toLowerCase() !== 'y') {
+      logger.error(`Operation cancelled.`);
+      rl.close();
+      return;
+    }
+
+    // Process each account
+    let totalSuccess = 0;
+    let totalFailed = 0;
+    
+    for (let i = 0; i < selectedAccounts.length; i++) {
+      const accountIndex = selectedAccounts[i];
+      const privateKey = accounts[accountIndex];
+      
+      const config = {
+        swapType,
+        numTransactions,
+        ethAmount,
+        useProxy,
+        proxies,
+        provider
+      };
+      
+      const result = await processAccount(accountIndex, privateKey, config);
+      totalSuccess += result.success;
+      totalFailed += result.failed;
+      
+      // Add delay between accounts
+      if (i < selectedAccounts.length - 1) {
+        const delay = 30000 + Math.floor(Math.random() * 30000);
+        logger.loading(`Waiting ${Math.round(delay / 1000)} seconds before next account...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+
+    logger.success(`All accounts completed!`);
+    logger.info(`Summary: ${totalSuccess} successful transactions, ${totalFailed} failed`);
+    
   } catch (error) {
     logger.error(`Fatal error: ${error.message}`);
   } finally {
