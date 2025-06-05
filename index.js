@@ -44,6 +44,21 @@ const question = (query) => new Promise(resolve => rl.question(query, resolve));
 const randomDelay = (min = 2000, max = 5000) => 
   new Promise(resolve => setTimeout(resolve, Math.floor(Math.random() * (max - min + 1)) + min));
 
+// Random user agent generator
+const getRandomUserAgent = () => {
+  const userAgents = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.2151.97',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.2151.93'
+  ];
+  return userAgents[Math.floor(Math.random() * userAgents.length)];
+};
+
 // Load accounts from .env file
 const loadAccounts = () => {
   try {
@@ -120,49 +135,69 @@ const formatProxy = (proxyString) => {
   };
 };
 
-// Retry function with exponential backoff
-const retry = async (fn, retries = 20, baseDelay = 5000, proxies = null) => {
-  for (let i = 0; i < retries; i++) {
-    try {
-      return await fn();
-    } catch (error) {
-      if (i === retries - 1) throw error;
-      
-      const isRateLimit = error.response?.status === 429;
-      const delay = isRateLimit 
-        ? baseDelay * Math.pow(2, Math.min(i, 5)) + Math.random() * 1000
-        : baseDelay + Math.random() * 2000;
-      
-      // If using proxies and hit rate limit, switch proxy
-      let proxyMessage = '';
-      if (isRateLimit && proxies && proxies.length > 0) {
-        proxyMessage = ' Switching proxy...';
-      }
-        
-      logger.warn(`${isRateLimit ? 'Rate limit hit' : 'API call failed'}: ${error.message}. Retry ${i + 1}/${retries} in ${Math.round(delay/1000)}s...${proxyMessage}`);
-      await new Promise(resolve => setTimeout(resolve, delay));
+// Test if a proxy is working
+const testProxy = async (proxy) => {
+  try {
+    if (!proxy) return false;
+    
+    const formattedProxy = formatProxy(proxy);
+    if (!formattedProxy) return false;
+    
+    const proxyUrl = `http://${formattedProxy.auth.username}:${formattedProxy.auth.password}@${formattedProxy.host}:${formattedProxy.port}`;
+    const agent = new HttpsProxyAgent(proxyUrl);
+    
+    const response = await axios.get('https://httpbin.org/ip', {
+      httpsAgent: agent,
+      proxy: false,
+      timeout: 10000
+    });
+    
+    return response.status === 200;
+  } catch (error) {
+    return false;
+  }
+};
+
+// Find a working proxy
+const findWorkingProxy = async (proxies) => {
+  if (!proxies || proxies.length === 0) return null;
+  
+  logger.loading('Testing proxies...');
+  
+  // Try up to 5 random proxies
+  for (let i = 0; i < Math.min(5, proxies.length); i++) {
+    const proxy = getRandomProxy(proxies);
+    logger.step(`Testing proxy ${i + 1}/5: ${proxy.split('@')[1]}`);
+    
+    if (await testProxy(proxy)) {
+      logger.success(`Found working proxy: ${proxy.split('@')[1]}`);
+      return proxy;
     }
   }
+  
+  logger.warn('No working proxy found after 5 attempts. Will try randomly during requests.');
+  return null;
 };
 
 // Create axios instance with proper headers and optional proxy
 const createAxiosInstance = (proxy = null) => {
+  const userAgent = getRandomUserAgent();
+  
   const config = {
     timeout: 30000,
     headers: {
       'accept': 'application/json, text/plain, */*',
       'content-type': 'application/json',
-      'accept-language': 'en-US,en;q=0.5',
-      'priority': 'u=1, i',
-      'sec-ch-ua': '"Chromium";v="136", "Brave";v="136", "Not.A/Brand";v="99"',
+      'accept-language': 'en-US,en;q=0.9',
+      'user-agent': userAgent,
+      'origin': 'https://testnet.euclidswap.io',
+      'referer': 'https://testnet.euclidswap.io/',
+      'sec-ch-ua': '"Google Chrome";v="119", "Chromium";v="119", "Not?A_Brand";v="24"',
       'sec-ch-ua-mobile': '?0',
       'sec-ch-ua-platform': '"Windows"',
       'sec-fetch-dest': 'empty',
       'sec-fetch-mode': 'cors',
-      'sec-fetch-site': 'cross-site',
-      'sec-gpc': '1',
-      'Referer': 'https://testnet.euclidswap.io/',
-      'Referrer-Policy': 'strict-origin-when-cross-origin'
+      'sec-fetch-site': 'cross-site'
     }
   };
 
@@ -177,6 +212,44 @@ const createAxiosInstance = (proxy = null) => {
   }
 
   return axios.create(config);
+};
+
+// Improved retry function with better proxy rotation and error handling
+const retry = async (fn, retries = 20, baseDelay = 5000, proxies = null) => {
+  let currentProxy = proxies && proxies.length > 0 ? getRandomProxy(proxies) : null;
+  let axiosInstance = createAxiosInstance(currentProxy);
+  
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await fn(axiosInstance);
+    } catch (error) {
+      if (i === retries - 1) throw error;
+      
+      const status = error.response?.status;
+      const isRateLimit = status === 429;
+      const isForbidden = status === 403;
+      
+      // Calculate delay with some randomness
+      const delay = isRateLimit 
+        ? baseDelay * Math.pow(1.5, Math.min(i, 5)) + Math.random() * 1000
+        : baseDelay + Math.random() * 2000;
+      
+      // Switch proxy for 403 or 429 errors if proxies are available
+      let proxyMessage = '';
+      if ((isRateLimit || isForbidden) && proxies && proxies.length > 0) {
+        currentProxy = getRandomProxy(proxies);
+        axiosInstance = createAxiosInstance(currentProxy);
+        proxyMessage = ` Switching to new proxy: ${currentProxy.split('@')[1]}`;
+      }
+      
+      const errorType = isRateLimit ? 'Rate limit hit' : 
+                        isForbidden ? 'Access forbidden (403)' : 
+                        'API call failed';
+        
+      logger.warn(`${errorType}: ${error.message}. Retry ${i + 1}/${retries} in ${Math.round(delay/1000)}s...${proxyMessage}`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
 };
 
 // Token configurations
@@ -275,19 +348,15 @@ async function processAccount(accountIndex, privateKey, config) {
     
     let successCount = 0;
     let failedCount = 0;
+    
+    // Find a working proxy if enabled
+    let workingProxy = null;
+    if (useProxy && proxies.length > 0) {
+      workingProxy = await findWorkingProxy(proxies);
+    }
 
     // Execute transactions
     for (let i = 0; i < numTransactions; i++) {
-      // Select proxy for this transaction
-      let currentProxy = null;
-      if (useProxy && proxies.length > 0) {
-        currentProxy = getRandomProxy(proxies);
-        logger.info(`Using proxy: ${colors.yellow}${currentProxy.split('@')[1]}`);
-      }
-      
-      // Create API client with or without proxy
-      const axiosInstance = createAxiosInstance(currentProxy);
-      
       // Determine target token
       let targetToken;
       if (swapType === '4') {
@@ -351,8 +420,8 @@ async function processAccount(accountIndex, privateKey, config) {
 
         // Get quote with retry - pass proxies for potential rotation
         const quoteResponse = await retry(
-          () => axiosInstance.post(
-            'https://testnet.api.euclidprotocol.com/api/v1/execute/astro/swap',
+          (axios) => axios.post(
+            'https://testnet.api.euclidprotocol.com:8081/api/v1/execute/astro/swap',
             quotePayload
           ), 
           20, 
@@ -393,8 +462,8 @@ async function processAccount(accountIndex, privateKey, config) {
 
         // Get swap data with retry
         const swapResponse = await retry(
-          () => axiosInstance.post(
-            'https://testnet.api.euclidprotocol.com/api/v1/execute/astro/swap',
+          (axios) => axios.post(
+            'https://testnet.api.euclidprotocol.com:8081/api/v1/execute/astro/swap',
             swapPayload
           ),
           20,
@@ -500,8 +569,8 @@ async function processAccount(accountIndex, privateKey, config) {
           };
 
           await retry(
-            () => axiosInstance.post(
-              'https://testnet.api.euclidprotocol.com/api/v1/txn/track/swap',
+            (axios) => axios.post(
+              'https://testnet.api.euclidprotocol.com:8081/api/v1/txn/track/swap',
               {
                 chain: 'arbitrum',
                 tx_hash: txResponse.hash,
@@ -516,7 +585,7 @@ async function processAccount(accountIndex, privateKey, config) {
 
           // Track with Intract
           await retry(
-            () => axiosInstance.post(
+            (axios) => axios.post(
               'https://testnet.euclidswap.io/api/intract-track',
               {
                 chain_uid: 'arbitrum',
@@ -548,6 +617,9 @@ async function processAccount(accountIndex, privateKey, config) {
         if (error.response?.status === 429) {
           logger.warn(`Rate limit hit. Waiting 30s before continuing...`);
           await new Promise(resolve => setTimeout(resolve, 30000));
+        } else if (error.response?.status === 403) {
+          logger.warn(`Access forbidden (403). Waiting 45s before trying with a different proxy...`);
+          await new Promise(resolve => setTimeout(resolve, 45000));
         }
         failedCount++;
       }
@@ -675,7 +747,7 @@ async function main() {
     logger.step(`Total transactions: ${colors.yellow}${totalTransactions}`);
     logger.step(`ETH per tx: ${colors.yellow}${ethAmount} ETH`);
     logger.step(`Using proxies: ${colors.yellow}${useProxy ? 'Yes' : 'No'}`);
-    logger.step(`Retry policy: ${colors.yellow}20 attempts with 5s+ backoff\n`);
+    logger.step(`Retry policy: ${colors.yellow}20 attempts with improved backoff\n`);
 
     const confirm = await question(`${colors.yellow}Continue? (y/n): ${colors.reset}`);
     if (confirm.toLowerCase() !== 'y') {
